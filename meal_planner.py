@@ -154,7 +154,7 @@ def send_email(html_content: str, plain_text: str):
 
     resend.Emails.send({
         "from": "Meal Planner <meals@parksmealplans.shop>",
-        "to": os.environ["RECIPIENT_EMAILS"],
+        "to": [e.strip() for e in os.environ["RECIPIENT_EMAILS"].split(",")],
         "subject": subject,
         "html": html_content,
     })
