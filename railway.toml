@@ -1,0 +1,9 @@
+[build]
+builder = "NIXPACKS"
+
+[deploy]
+startCommand = "python meal_planner.py"
+cronSchedule = "0 9 * * 6"
+# Runs every Saturday at 9:00 AM UTC
+# Change the timezone offset if needed — e.g. for US Eastern (UTC-4 in summer),
+# set to "0 13 * * 6" to get 9 AM Eastern time
