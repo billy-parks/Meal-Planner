@@ -15,8 +15,8 @@ FAMILY_PROFILE = """
 - 3 people: 2 adults and one 8-year-old picky eater
 - The child dislikes: strong spices, mixed textures, visible onions/mushrooms, 
   and most seafood
-- The child likes: pasta, pizza, tacos, chicken tenders, mild flavours, 
-  anything with cheese, simple sides like corn or plain rice
+- The child likes: pasta, hot dogs, tacos, chicken tenders, mild flavours, 
+  anything with cheese, simple sides like corn, brocolli or plain rice
 - Adults enjoy a wider variety but prefer simple weeknight meals
 - Budget-conscious: no expensive specialty ingredients
 - Mix of quick meals (under 30 min) and one or two weekend-style meals
@@ -153,8 +153,8 @@ def send_email(html_content: str, plain_text: str):
     subject = f"🍽️ Meal Plan for the Week of {next_monday.strftime('%B %d')}"
 
     resend.Emails.send({
-        "from": "Meal Planner <onboarding@resend.dev>",
-        "to": os.environ["RECIPIENT_EMAIL"],
+        "from": "Meal Planner <meals@parksmealplans.shop>",
+        "to": os.environ["RECIPIENT_EMAILS"],
         "subject": subject,
         "html": html_content,
     })
