@@ -145,26 +145,20 @@ def format_html_email(meal_plan_text: str) -> str:
     """
 
 
+import resend
+
 def send_email(html_content: str, plain_text: str):
+    resend.api_key = os.environ["RESEND_API_KEY"]
     next_monday = datetime.now() + timedelta(days=(7 - datetime.now().weekday()))
     subject = f"🍽️ Meal Plan for the Week of {next_monday.strftime('%B %d')}"
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"]    = GMAIL_ADDRESS
-    msg["To"]      = RECIPIENT_EMAIL
-
-    msg.attach(MIMEText(plain_text, "plain"))
-    msg.attach(MIMEText(html_content, "html"))
-
-    with smtplib.SMTP("smtp.gmail.com", 587) as server:
-        server.ehlo()
-        server.starttls()
-        server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-        server.sendmail(GMAIL_ADDRESS, RECIPIENT_EMAIL, msg.as_string())
-
-    print(f"✅ Meal plan sent to {RECIPIENT_EMAIL}")
-
+    resend.Emails.send({
+        "from": "Meal Planner <onboarding@resend.dev>",
+        "to": os.environ["RECIPIENT_EMAIL"],
+        "subject": subject,
+        "html": html_content,
+    })
+    print(f"✅ Meal plan sent!")
 
 def main():
     print("🥗 Generating meal plan...")
