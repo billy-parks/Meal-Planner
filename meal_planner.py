@@ -2,6 +2,7 @@ import anthropic
 import smtplib
 import os
 import re
+import random
 import requests
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -15,7 +16,9 @@ RECIPIENT_EMAIL   = os.environ.get("RECIPIENT_EMAIL", GMAIL_ADDRESS)
 
 POSTAL_CODE = "K7C3T3"  # Carleton Place, Ontario
 
-# Flipp merchant name fragments → display names for the email
+FLIPP_BASE = "https://flyers-ng.flippback.com/api/flipp"
+
+# Merchant name fragments (lowercase) → display names used in the email
 FLIPP_STORE_MAP = {
     "walmart":            "Walmart",
     "freshco":            "FreshCo",
@@ -137,54 +140,66 @@ def _simplify_for_search(item: str) -> str:
 
 def check_flipp_sales(items: list[str]) -> dict[str, list[tuple[str, str]]]:
     """
-    Query Flipp for each shopping list item and return those on sale at
-    Walmart, FreshCo, or Your Independent Grocer in Carleton Place.
+    Fetch current flyers from Flipp for Carleton Place and return shopping list
+    items that are on sale at Walmart, FreshCo, or Your Independent Grocer.
 
     Returns {original_item_text: [(store_display_name, price_string), ...]}
-    Silently skips items / stores that cannot be reached.
+    Returns an empty dict (rather than raising) if Flipp cannot be reached.
     """
-    sales: dict[str, list] = {}
-    term_cache: dict[str, list] = {}
-
+    sid = "".join(str(random.randint(0, 9)) for _ in range(16))
+    params = {"locale": "en", "postal_code": POSTAL_CODE, "sid": sid}
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
-    for item in items:
-        term = _simplify_for_search(item)
-        if not term or len(term) < 3:
+    # Step 1 — discover flyers for our postal code
+    resp = requests.get(f"{FLIPP_BASE}/data", params=params, headers=headers, timeout=15)
+    resp.raise_for_status()
+    data = resp.json()
+
+    flyers = data.get("flyers") or []
+    target_flyers: list[tuple[int, str]] = []
+    for flyer in flyers:
+        merchant = (flyer.get("merchant_name") or "").lower()
+        display = next((d for kw, d in FLIPP_STORE_MAP.items() if kw in merchant), None)
+        if display:
+            target_flyers.append((flyer["id"], display))
+
+    if not target_flyers:
+        return {}
+
+    # Step 2 — fetch all items from each target store's flyer
+    sale_catalog: list[tuple[str, str, str]] = []  # (item_name_lower, store, price_str)
+    for flyer_id, store_display in target_flyers:
+        try:
+            r = requests.get(
+                f"{FLIPP_BASE}/flyers/{flyer_id}/flyer_items",
+                params=params, headers=headers, timeout=15,
+            )
+            if r.status_code != 200:
+                continue
+            for fi in r.json():
+                name = (fi.get("name") or "").strip()
+                price = fi.get("price") or fi.get("current_price")
+                try:
+                    price_str = f"${float(price):.2f}" if price else ""
+                except (ValueError, TypeError):
+                    price_str = str(price)
+                if name and price_str:
+                    sale_catalog.append((name.lower(), store_display, price_str))
+        except Exception:
             continue
 
-        if term not in term_cache:
-            try:
-                resp = requests.get(
-                    "https://backflipp.wishabi.com/flipp/items/search",
-                    params={"locale": "en-CA", "term": term, "postal_code": POSTAL_CODE},
-                    headers=headers,
-                    timeout=10,
-                )
-                if resp.status_code != 200:
-                    term_cache[term] = []
-                    continue
-                data = resp.json()
-                merchant_map = {m["id"]: m["name"] for m in data.get("merchants", [])}
-                matches: list[tuple[str, str]] = []
-                for flyer_item in data.get("items", []):
-                    raw_name = (merchant_map.get(flyer_item.get("merchant_id"), "") or "").lower()
-                    display = next(
-                        (d for kw, d in FLIPP_STORE_MAP.items() if kw in raw_name), None
-                    )
-                    if display and not any(s == display for s, _ in matches):
-                        price = flyer_item.get("current_price")
-                        sale_story = flyer_item.get("sale_story", "")
-                        price_str = f"${price:.2f}" if price else sale_story
-                        if price_str:
-                            matches.append((display, price_str))
-                term_cache[term] = matches
-            except Exception:
-                term_cache[term] = []
-                continue
-
-        if term_cache[term]:
-            sales[item] = term_cache[term]
+    # Step 3 — match shopping list items against the sale catalog
+    sales: dict[str, list] = {}
+    for item in items:
+        term = _simplify_for_search(item).lower()
+        if not term or len(term) < 3:
+            continue
+        for sale_name, store_display, price_str in sale_catalog:
+            if term in sale_name or sale_name in term:
+                if item not in sales:
+                    sales[item] = []
+                if not any(s == store_display for s, _ in sales[item]):
+                    sales[item].append((store_display, price_str))
 
     return sales
 
