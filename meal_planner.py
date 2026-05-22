@@ -154,15 +154,73 @@ def _flipp_item_url(item_id: int, merchant: str, flyer_name: str) -> str:
     )
 
 
+# Words that are acceptable after a matched search term (descriptors, not new products).
+# Anything NOT in this set following the last search word means a different product.
+_SALE_DESCRIPTORS = {
+    "fresh", "frozen", "organic", "natural",
+    "boneless", "skinless", "lean", "extra", "virgin", "pure",
+    "whole", "classic", "original", "premium", "regular", "plain",
+    "sliced", "diced", "chopped", "minced", "shredded", "grated", "crushed",
+    "salted", "unsalted", "sweetened", "roasted", "smoked", "dried", "raw",
+    "selected", "assorted", "varieties", "various", "mixed", "ready",
+    "canned", "jarred", "bottled", "bagged", "boxed", "tinned",
+    "bulbs", "cloves", "heads", "bunch", "bunches", "pods",
+    "large", "small", "medium", "mini", "baby", "giant", "jumbo",
+    "pieces", "units", "count", "each",
+}
+
+
+def _word_pattern(word: str) -> str:
+    """Regex pattern that matches a word and its plural/singular form."""
+    stem = word.rstrip("s") if word.endswith("s") and len(word) > 3 else word
+    return r"\b" + re.escape(stem) + r"s?\b"
+
+
 def _items_match(search_term: str, sale_name: str) -> bool:
     """
-    True when every word in search_term appears as a whole word in sale_name.
-    Uses word boundaries so 'corn' does not match 'popcorn'.
+    True when:
+    1. Every search word appears as a whole word in the sale name
+       (plural/singular tolerant), AND
+    2. No significant non-descriptor word follows the last search word
+       (prevents 'garlic' matching 'Garlic Shrimp'), AND
+    3. No significant non-descriptor word immediately precedes the first
+       search word (prevents 'butter' matching 'Peanut Butter').
     """
-    words = [w for w in re.split(r"\W+", search_term) if len(w) >= 3]
-    if not words:
+    search_words = [w for w in re.split(r"\W+", search_term.lower()) if len(w) >= 3]
+    if not search_words:
         return False
-    return all(re.search(r"\b" + re.escape(w) + r"\b", sale_name, re.IGNORECASE) for w in words)
+
+    # Rule 1 — all search words present (plural/singular tolerant)
+    if not all(re.search(_word_pattern(w), sale_name, re.IGNORECASE) for w in search_words):
+        return False
+
+    # Rule 2 — nothing significant AFTER the last search word
+    last_hits = list(re.finditer(_word_pattern(search_words[-1]), sale_name, re.IGNORECASE))
+    after = sale_name[last_hits[-1].end():]
+    after = re.sub(r"\b\d+(\.\d+)?\s*(g|kg|lb|lbs|oz|ml|L|pk|pcs|ct|x)\b.*", "", after, flags=re.IGNORECASE)
+    after_words = [w.lower() for w in re.findall(r"\b[a-zA-Z]{3,}\b", after)]
+    if not all(w in _SALE_DESCRIPTORS for w in after_words):
+        return False
+
+    # Rule 3 — nothing significant BEFORE the first search word.
+    # One unknown word is allowed (brand names like "Classico", "PC", "Heinz").
+    # But known food-compound prefixes (peanut, almond, coconut…) make it a
+    # different product entirely, so reject those.
+    _COMPOUND_PREFIXES = {
+        "peanut", "almond", "cashew", "hazelnut", "sunflower", "sesame",
+        "coconut", "oat", "soy", "rice", "corn", "wheat", "rye",
+        "apple", "grape", "lemon", "orange", "tomato", "onion",
+        "chocolate", "caramel", "maple", "honey", "cream",
+    }
+    first_hit = re.search(_word_pattern(search_words[0]), sale_name, re.IGNORECASE)
+    before = sale_name[:first_hit.start()]
+    before_words = [w.lower() for w in re.findall(r"\b[a-zA-Z]{3,}\b", before)]
+    before_extra = [w for w in before_words if w not in _SALE_DESCRIPTORS]
+    if any(w in _COMPOUND_PREFIXES for w in before_extra):
+        return False
+    # Allow up to 2 unknown prefix words (covers multi-word brands like "Green Giant");
+    # more than that is suspicious
+    return len(before_extra) <= 2
 
 
 def check_flipp_sales(items: list[str]) -> dict[str, list[tuple]]:
