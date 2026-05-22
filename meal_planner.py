@@ -138,12 +138,12 @@ def _simplify_for_search(item: str) -> str:
     return " ".join(words).strip()
 
 
-def check_flipp_sales(items: list[str]) -> dict[str, list[tuple[str, str]]]:
+def check_flipp_sales(items: list[str]) -> dict[str, list[tuple]]:
     """
     Fetch current flyers from Flipp for Carleton Place and return shopping list
     items that are on sale at Walmart, FreshCo, or Your Independent Grocer.
 
-    Returns {original_item_text: [(store_display_name, price_string), ...]}
+    Returns {original_item_text: [(store, price, image_url, valid_to_str, item_id), ...]}
     Returns an empty dict (rather than raising) if Flipp cannot be reached.
     """
     sid = "".join(str(random.randint(0, 9)) for _ in range(16))
@@ -167,7 +167,8 @@ def check_flipp_sales(items: list[str]) -> dict[str, list[tuple[str, str]]]:
         return {}
 
     # Step 2 — fetch all items from each target store's flyer
-    sale_catalog: list[tuple[str, str, str]] = []  # (item_name_lower, store, price_str)
+    # catalog entry: (name_lower, store, price_str, image_url, valid_to_str, item_id)
+    sale_catalog: list[tuple] = []
     for flyer_id, store_display in target_flyers:
         try:
             r = requests.get(
@@ -183,8 +184,19 @@ def check_flipp_sales(items: list[str]) -> dict[str, list[tuple[str, str]]]:
                     price_str = f"${float(price):.2f}" if price else ""
                 except (ValueError, TypeError):
                     price_str = str(price)
-                if name and price_str:
-                    sale_catalog.append((name.lower(), store_display, price_str))
+                if not name or not price_str:
+                    continue
+                image_url = fi.get("cutout_image_url") or ""
+                valid_to_str = ""
+                raw_date = fi.get("valid_to") or ""
+                if raw_date:
+                    try:
+                        dt = datetime.fromisoformat(raw_date)
+                        valid_to_str = dt.strftime("%b") + " " + str(dt.day)
+                    except (ValueError, AttributeError):
+                        valid_to_str = raw_date[:10]
+                item_id = fi.get("id") or ""
+                sale_catalog.append((name.lower(), store_display, price_str, image_url, valid_to_str, item_id))
         except Exception:
             continue
 
@@ -194,12 +206,12 @@ def check_flipp_sales(items: list[str]) -> dict[str, list[tuple[str, str]]]:
         term = _simplify_for_search(item).lower()
         if not term or len(term) < 3:
             continue
-        for sale_name, store_display, price_str in sale_catalog:
-            if term in sale_name or sale_name in term:
+        for name_lower, store_display, price_str, image_url, valid_to_str, item_id in sale_catalog:
+            if term in name_lower or name_lower in term:
                 if item not in sales:
                     sales[item] = []
-                if not any(s == store_display for s, _ in sales[item]):
-                    sales[item].append((store_display, price_str))
+                if not any(s == store_display for s, *_ in sales[item]):
+                    sales[item].append((store_display, price_str, image_url, valid_to_str, item_id))
 
     return sales
 
@@ -225,7 +237,7 @@ def annotate_shopping_list(meal_plan_text: str, sales: dict[str, list]) -> str:
             item_lower = item_text.lower()
             for sale_item, store_sales in sales.items():
                 if sale_item.lower() in item_lower or item_lower in sale_item.lower():
-                    tags = ", ".join(f"{store} ({price})" for store, price in store_sales)
+                    tags = ", ".join(f"{t[0]} ({t[1]})" for t in store_sales)
                     line = line.rstrip() + f" [ON SALE: {tags}]"
                     break
 
@@ -234,10 +246,38 @@ def annotate_shopping_list(meal_plan_text: str, sales: dict[str, list]) -> str:
     return "\n".join(result)
 
 
-def format_html_email(meal_plan_text: str) -> str:
+def _sale_card_html(store_sales: list[tuple]) -> str:
+    """Render one sale card per store as a compact HTML block."""
+    cards = []
+    for store, price, image_url, valid_to_str, item_id in store_sales:
+        flipp_url = f"https://flipp.com/en-ca/flyer_items/{item_id}" if item_id else "https://flipp.com/en-ca"
+        end_line = f'<span style="color:#888;font-size:10px;">Sale ends {valid_to_str}</span>' if valid_to_str else ""
+        img_tag = (
+            f'<img src="{image_url}" width="44" height="44" '
+            f'style="object-fit:contain;border-radius:4px;margin-right:8px;vertical-align:middle;" />'
+            if image_url else ""
+        )
+        cards.append(
+            f'<div style="display:inline-flex;align-items:center;background:#fff5f5;'
+            f'border:1px solid #e63946;border-radius:8px;padding:4px 10px 4px 6px;'
+            f'margin:3px 4px 0 0;font-size:12px;vertical-align:middle;">'
+            f'{img_tag}'
+            f'<span>'
+            f'<strong style="color:#e63946;">🏷️ ON SALE</strong> &nbsp;'
+            f'<a href="{flipp_url}" style="color:#1b2e22;text-decoration:none;font-weight:bold;">'
+            f'{store} — {price}</a><br>'
+            f'{end_line}'
+            f'</span>'
+            f'</div>'
+        )
+    return "".join(cards)
+
+
+def format_html_email(meal_plan_text: str, sales: dict | None = None) -> str:
     """Wrap the plain-text meal plan in a clean HTML email."""
     lines = meal_plan_text.split("\n")
     html_lines = []
+    in_shopping = False
 
     for line in lines:
         stripped = line.strip()
@@ -248,6 +288,7 @@ def format_html_email(meal_plan_text: str) -> str:
                               f'🍽️ {stripped}</h1>')
         elif stripped.startswith("---") and stripped.endswith("---"):
             section = stripped.strip("-").strip()
+            in_shopping = (section == "SHOPPING LIST")
             html_lines.append(f'<h2 style="color:#1b4332;border-bottom:2px solid #95d5b2;'
                               f'padding-bottom:4px;font-family:Georgia,serif;">{section}</h2>')
         elif any(stripped.startswith(day + ":") for day in
@@ -258,16 +299,22 @@ def format_html_email(meal_plan_text: str) -> str:
             html_lines.append(f'<p style="background:#d8f3dc;padding:6px 10px;border-radius:6px;'
                               f'font-size:14px;">🧒 {stripped}</p>')
         elif stripped.startswith("-"):
-            item_text = stripped[1:].strip()
-            sale_match = re.search(r"\[ON SALE: (.*?)\]$", item_text)
-            if sale_match:
-                clean = item_text[:sale_match.start()].strip()
-                badge = (
-                    f'<span style="background:#e63946;color:white;font-size:11px;'
-                    f'padding:1px 7px;border-radius:10px;font-weight:bold;'
-                    f'margin-left:6px;">🏷️ ON SALE: {sale_match.group(1)}</span>'
+            # Strip the legacy text annotation if present
+            item_text = re.sub(r"\s*\[ON SALE:.*?\]$", "", stripped[1:].strip())
+            sale_html = ""
+            if in_shopping and sales:
+                item_lower = item_text.lower()
+                for sale_item, store_sales in sales.items():
+                    if sale_item.lower() in item_lower or item_lower in sale_item.lower():
+                        sale_html = _sale_card_html(store_sales)
+                        break
+            if sale_html:
+                html_lines.append(
+                    f'<li style="margin:6px 0;">'
+                    f'<span style="font-weight:500;">{item_text}</span><br>'
+                    f'{sale_html}'
+                    f'</li>'
                 )
-                html_lines.append(f'<li style="margin:2px 0;">{clean}{badge}</li>')
             else:
                 html_lines.append(f'<li style="margin:2px 0;">{item_text}</li>')
         elif stripped[0].isdigit() and ". " in stripped:
@@ -317,6 +364,7 @@ def main():
 
     print("🏷️  Checking local flyers (Walmart, FreshCo, Your Independent Grocer)...")
     shopping_items = _extract_shopping_items(meal_plan)
+    sales: dict = {}
     try:
         sales = check_flipp_sales(shopping_items)
         if sales:
@@ -328,7 +376,7 @@ def main():
         print(f"   Sale check skipped: {exc}")
 
     print("📧 Sending email...")
-    html = format_html_email(meal_plan)
+    html = format_html_email(meal_plan, sales=sales or None)
     send_email(html, meal_plan)
 
 
