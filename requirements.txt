@@ -1,2 +1,3 @@
 anthropic>=0.25.0
 resend
+requests>=2.31.0

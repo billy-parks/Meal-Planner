@@ -1,6 +1,8 @@
 import anthropic
 import smtplib
 import os
+import re
+import requests
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta
@@ -10,6 +12,16 @@ ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 GMAIL_ADDRESS     = os.environ["GMAIL_ADDRESS"]       # your Gmail address
 GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"] # Gmail App Password (not your login password)
 RECIPIENT_EMAIL   = os.environ.get("RECIPIENT_EMAIL", GMAIL_ADDRESS)
+
+POSTAL_CODE = "K7C3T3"  # Carleton Place, Ontario
+
+# Flipp merchant name fragments → display names for the email
+FLIPP_STORE_MAP = {
+    "walmart":            "Walmart",
+    "freshco":            "FreshCo",
+    "independent grocer": "Your Independent Grocer",
+    "your independent":   "Your Independent Grocer",
+}
 
 FAMILY_PROFILE = """
 - 3 people: 2 adults and one 8-year-old picky eater
@@ -94,6 +106,119 @@ Other:
     return message.content[0].text
 
 
+def _extract_shopping_items(meal_plan_text: str) -> list[str]:
+    """Return every bullet from the ---SHOPPING LIST--- section."""
+    items, in_section = [], False
+    for line in meal_plan_text.split("\n"):
+        stripped = line.strip()
+        if stripped == "---SHOPPING LIST---":
+            in_section = True
+            continue
+        if in_section:
+            if stripped.startswith("---"):
+                break
+            if stripped.startswith("-"):
+                items.append(stripped[1:].strip())
+    return items
+
+
+def _simplify_for_search(item: str) -> str:
+    """Strip quantities/units and return first 1-3 meaningful words."""
+    item = re.sub(r"\(.*?\)", "", item)
+    item = re.sub(
+        r"\b\d+(\.\d+)?\s*(g|kg|lb|lbs|oz|ml|L|litre|cup|cups|tsp|tbsp|"
+        r"bunch|cloves?|cans?|pkg|packages?|slices?|heads?)\b",
+        "", item, flags=re.IGNORECASE,
+    )
+    item = re.sub(r"^\d+\s*", "", item.strip())
+    words = item.split()[:3]
+    return " ".join(words).strip()
+
+
+def check_flipp_sales(items: list[str]) -> dict[str, list[tuple[str, str]]]:
+    """
+    Query Flipp for each shopping list item and return those on sale at
+    Walmart, FreshCo, or Your Independent Grocer in Carleton Place.
+
+    Returns {original_item_text: [(store_display_name, price_string), ...]}
+    Silently skips items / stores that cannot be reached.
+    """
+    sales: dict[str, list] = {}
+    term_cache: dict[str, list] = {}
+
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+
+    for item in items:
+        term = _simplify_for_search(item)
+        if not term or len(term) < 3:
+            continue
+
+        if term not in term_cache:
+            try:
+                resp = requests.get(
+                    "https://backflipp.wishabi.com/flipp/items/search",
+                    params={"locale": "en-CA", "term": term, "postal_code": POSTAL_CODE},
+                    headers=headers,
+                    timeout=10,
+                )
+                if resp.status_code != 200:
+                    term_cache[term] = []
+                    continue
+                data = resp.json()
+                merchant_map = {m["id"]: m["name"] for m in data.get("merchants", [])}
+                matches: list[tuple[str, str]] = []
+                for flyer_item in data.get("items", []):
+                    raw_name = (merchant_map.get(flyer_item.get("merchant_id"), "") or "").lower()
+                    display = next(
+                        (d for kw, d in FLIPP_STORE_MAP.items() if kw in raw_name), None
+                    )
+                    if display and not any(s == display for s, _ in matches):
+                        price = flyer_item.get("current_price")
+                        sale_story = flyer_item.get("sale_story", "")
+                        price_str = f"${price:.2f}" if price else sale_story
+                        if price_str:
+                            matches.append((display, price_str))
+                term_cache[term] = matches
+            except Exception:
+                term_cache[term] = []
+                continue
+
+        if term_cache[term]:
+            sales[item] = term_cache[term]
+
+    return sales
+
+
+def annotate_shopping_list(meal_plan_text: str, sales: dict[str, list]) -> str:
+    """Append [ON SALE: ...] markers to matching lines in the shopping list."""
+    if not sales:
+        return meal_plan_text
+
+    lines = meal_plan_text.split("\n")
+    in_section = False
+    result = []
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "---SHOPPING LIST---":
+            in_section = True
+        elif in_section and stripped.startswith("---"):
+            in_section = False
+
+        if in_section and stripped.startswith("-"):
+            item_text = stripped[1:].strip()
+            item_lower = item_text.lower()
+            for sale_item, store_sales in sales.items():
+                if sale_item.lower() in item_lower or item_lower in sale_item.lower():
+                    tags = ", ".join(f"{store} ({price})" for store, price in store_sales)
+                    line = line.rstrip() + f" [ON SALE: {tags}]"
+                    break
+
+        result.append(line)
+
+    return "\n".join(result)
+
+
 def format_html_email(meal_plan_text: str) -> str:
     """Wrap the plain-text meal plan in a clean HTML email."""
     lines = meal_plan_text.split("\n")
@@ -118,7 +243,18 @@ def format_html_email(meal_plan_text: str) -> str:
             html_lines.append(f'<p style="background:#d8f3dc;padding:6px 10px;border-radius:6px;'
                               f'font-size:14px;">🧒 {stripped}</p>')
         elif stripped.startswith("-"):
-            html_lines.append(f'<li style="margin:2px 0;">{stripped[1:].strip()}</li>')
+            item_text = stripped[1:].strip()
+            sale_match = re.search(r"\[ON SALE: (.*?)\]$", item_text)
+            if sale_match:
+                clean = item_text[:sale_match.start()].strip()
+                badge = (
+                    f'<span style="background:#e63946;color:white;font-size:11px;'
+                    f'padding:1px 7px;border-radius:10px;font-weight:bold;'
+                    f'margin-left:6px;">🏷️ ON SALE: {sale_match.group(1)}</span>'
+                )
+                html_lines.append(f'<li style="margin:2px 0;">{clean}{badge}</li>')
+            else:
+                html_lines.append(f'<li style="margin:2px 0;">{item_text}</li>')
         elif stripped[0].isdigit() and ". " in stripped:
             html_lines.append(f'<li style="margin:3px 0;">{stripped}</li>')
         else:
@@ -163,6 +299,18 @@ def send_email(html_content: str, plain_text: str):
 def main():
     print("🥗 Generating meal plan...")
     meal_plan = generate_meal_plan()
+
+    print("🏷️  Checking local flyers (Walmart, FreshCo, Your Independent Grocer)...")
+    shopping_items = _extract_shopping_items(meal_plan)
+    try:
+        sales = check_flipp_sales(shopping_items)
+        if sales:
+            print(f"   Found sales on {len(sales)} item(s).")
+            meal_plan = annotate_shopping_list(meal_plan, sales)
+        else:
+            print("   No matching sales found this week.")
+    except Exception as exc:
+        print(f"   Sale check skipped: {exc}")
 
     print("📧 Sending email...")
     html = format_html_email(meal_plan)
