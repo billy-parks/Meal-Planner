@@ -13,11 +13,11 @@ RECIPIENT_EMAIL   = os.environ.get("RECIPIENT_EMAIL", GMAIL_ADDRESS)
 
 FAMILY_PROFILE = """
 - 3 people: 2 adults and one 8-year-old picky eater
-- The child dislikes: strong spices, mixed textures, visible onions/mushrooms, 
-  and most seafood
+- The child dislikes: strong spices, mixed textures, visible onions/mushrooms,
+  most seafood, and pizza
 - The child likes: pasta, hot dogs, tacos, chicken tenders, mild flavours, 
-  anything with cheese, simple sides like corn, brocolli or plain rice
-- Adults enjoy a wider variety but prefer simple weeknight meals
+  anything with cheese, grilled cheese, simple sides like corn, brocolli or plain rice
+- Adults enjoy a wider variety but prefer simple weeknight meals, including BBQ recipes
 - Budget-conscious: no expensive specialty ingredients
 - Mix of quick meals (under 30 min) and one or two weekend-style meals
 """
