@@ -138,12 +138,23 @@ def _simplify_for_search(item: str) -> str:
     return " ".join(words).strip()
 
 
+def _items_match(search_term: str, sale_name: str) -> bool:
+    """
+    True when every word in search_term appears as a whole word in sale_name.
+    Uses word boundaries so 'corn' does not match 'popcorn'.
+    """
+    words = [w for w in re.split(r"\W+", search_term) if len(w) >= 3]
+    if not words:
+        return False
+    return all(re.search(r"\b" + re.escape(w) + r"\b", sale_name, re.IGNORECASE) for w in words)
+
+
 def check_flipp_sales(items: list[str]) -> dict[str, list[tuple]]:
     """
     Fetch current flyers from Flipp for Carleton Place and return shopping list
     items that are on sale at Walmart, FreshCo, or Your Independent Grocer.
 
-    Returns {original_item_text: [(store, price, image_url, valid_to_str, item_id), ...]}
+    Returns {original_item_text: [(store, price, image_url, valid_to_str, flyer_url), ...]}
     Returns an empty dict (rather than raising) if Flipp cannot be reached.
     """
     sid = "".join(str(random.randint(0, 9)) for _ in range(16))
@@ -156,20 +167,22 @@ def check_flipp_sales(items: list[str]) -> dict[str, list[tuple]]:
     data = resp.json()
 
     flyers = data.get("flyers") or []
-    target_flyers: list[tuple[int, str]] = []
+    target_flyers: list[tuple[int, str, str]] = []
     for flyer in flyers:
         merchant = (flyer.get("merchant") or "").lower()
         display = next((d for kw, d in FLIPP_STORE_MAP.items() if kw in merchant), None)
         if display and "Groceries" in flyer.get("categories", []):
-            target_flyers.append((flyer["id"], display))
+            flyer_path = (flyer.get("path") or "").strip("/")
+            flyer_url = f"https://flipp.com/en-ca/{flyer_path}" if flyer_path else "https://flipp.com/en-ca/"
+            target_flyers.append((flyer["id"], display, flyer_url))
 
     if not target_flyers:
         return {}
 
     # Step 2 — fetch all items from each target store's flyer
-    # catalog entry: (name_lower, store, price_str, image_url, valid_to_str, item_id)
+    # catalog entry: (name_lower, store, price_str, image_url, valid_to_str, flyer_url)
     sale_catalog: list[tuple] = []
-    for flyer_id, store_display in target_flyers:
+    for flyer_id, store_display, flyer_url in target_flyers:
         try:
             r = requests.get(
                 f"{FLIPP_BASE}/flyers/{flyer_id}/flyer_items",
@@ -195,8 +208,7 @@ def check_flipp_sales(items: list[str]) -> dict[str, list[tuple]]:
                         valid_to_str = dt.strftime("%b") + " " + str(dt.day)
                     except (ValueError, AttributeError):
                         valid_to_str = raw_date[:10]
-                item_id = fi.get("id") or ""
-                sale_catalog.append((name.lower(), store_display, price_str, image_url, valid_to_str, item_id))
+                sale_catalog.append((name.lower(), store_display, price_str, image_url, valid_to_str, flyer_url))
         except Exception:
             continue
 
@@ -206,12 +218,12 @@ def check_flipp_sales(items: list[str]) -> dict[str, list[tuple]]:
         term = _simplify_for_search(item).lower()
         if not term or len(term) < 3:
             continue
-        for name_lower, store_display, price_str, image_url, valid_to_str, item_id in sale_catalog:
-            if term in name_lower or name_lower in term:
+        for name_lower, store_display, price_str, image_url, valid_to_str, flyer_url in sale_catalog:
+            if _items_match(term, name_lower):
                 if item not in sales:
                     sales[item] = []
                 if not any(s == store_display for s, *_ in sales[item]):
-                    sales[item].append((store_display, price_str, image_url, valid_to_str, item_id))
+                    sales[item].append((store_display, price_str, image_url, valid_to_str, flyer_url))
 
     return sales
 
@@ -249,8 +261,7 @@ def annotate_shopping_list(meal_plan_text: str, sales: dict[str, list]) -> str:
 def _sale_card_html(store_sales: list[tuple]) -> str:
     """Render one sale card per store as a compact HTML block."""
     cards = []
-    for store, price, image_url, valid_to_str, item_id in store_sales:
-        flipp_url = f"https://flipp.com/en-ca/flyer_items/{item_id}" if item_id else "https://flipp.com/en-ca"
+    for store, price, image_url, valid_to_str, flyer_url in store_sales:
         end_line = f'<span style="color:#888;font-size:10px;">Sale ends {valid_to_str}</span>' if valid_to_str else ""
         img_tag = (
             f'<img src="{image_url}" width="44" height="44" '
@@ -263,9 +274,9 @@ def _sale_card_html(store_sales: list[tuple]) -> str:
             f'margin:3px 4px 0 0;font-size:12px;vertical-align:middle;">'
             f'{img_tag}'
             f'<span>'
-            f'<strong style="color:#e63946;">🏷️ ON SALE</strong> &nbsp;'
-            f'<a href="{flipp_url}" style="color:#1b2e22;text-decoration:none;font-weight:bold;">'
-            f'{store} — {price}</a><br>'
+            f'<strong style="color:#e63946;">&#x1F3F7;&#xFE0F; ON SALE</strong> &nbsp;'
+            f'<a href="{flyer_url}" style="color:#1b2e22;text-decoration:none;font-weight:bold;">'
+            f'{store} &mdash; {price}</a><br>'
             f'{end_line}'
             f'</span>'
             f'</div>'
