@@ -14,7 +14,8 @@ GMAIL_ADDRESS     = os.environ["GMAIL_ADDRESS"]       # your Gmail address
 GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"] # Gmail App Password (not your login password)
 RECIPIENT_EMAIL   = os.environ.get("RECIPIENT_EMAIL", GMAIL_ADDRESS)
 
-POSTAL_CODE = "K7C3T3"  # Carleton Place, Ontario
+POSTAL_CODE = "K7C3T3"   # Carleton Place, Ontario
+CITY_SLUG   = "carleton-place-on"
 
 FLIPP_BASE = "https://flyers-ng.flippback.com/api/flipp"
 
@@ -138,6 +139,21 @@ def _simplify_for_search(item: str) -> str:
     return " ".join(words).strip()
 
 
+def _slugify(text: str) -> str:
+    """Convert a string to a URL-safe slug (lowercase, hyphens, no repeated hyphens)."""
+    slug = re.sub(r"[^a-z0-9]+", "-", text.lower())
+    return slug.strip("-")
+
+
+def _flipp_item_url(item_id: int, merchant: str, flyer_name: str) -> str:
+    """Build a working flipp.com item URL for the given item."""
+    return (
+        f"https://flipp.com/en-ca/{CITY_SLUG}/item/"
+        f"{item_id}-{_slugify(merchant)}-{_slugify(flyer_name)}"
+        f"?postal_code={POSTAL_CODE}"
+    )
+
+
 def _items_match(search_term: str, sale_name: str) -> bool:
     """
     True when every word in search_term appears as a whole word in sale_name.
@@ -167,22 +183,26 @@ def check_flipp_sales(items: list[str]) -> dict[str, list[tuple]]:
     data = resp.json()
 
     flyers = data.get("flyers") or []
-    target_flyers: list[tuple[int, str, str]] = []
+    # Store (flyer_id, display_name, raw_merchant_name, flyer_name)
+    target_flyers: list[tuple[int, str, str, str]] = []
     for flyer in flyers:
         merchant = (flyer.get("merchant") or "").lower()
         display = next((d for kw, d in FLIPP_STORE_MAP.items() if kw in merchant), None)
         if display and "Groceries" in flyer.get("categories", []):
-            flyer_path = (flyer.get("path") or "").strip("/")
-            flyer_url = f"https://flipp.com/en-ca/{flyer_path}" if flyer_path else "https://flipp.com/en-ca/"
-            target_flyers.append((flyer["id"], display, flyer_url))
+            target_flyers.append((
+                flyer["id"],
+                display,
+                flyer.get("merchant") or display,
+                flyer.get("name") or "",
+            ))
 
     if not target_flyers:
         return {}
 
     # Step 2 — fetch all items from each target store's flyer
-    # catalog entry: (name_lower, store, price_str, image_url, valid_to_str, flyer_url)
+    # catalog entry: (name_lower, store, price_str, image_url, valid_to_str, item_url)
     sale_catalog: list[tuple] = []
-    for flyer_id, store_display, flyer_url in target_flyers:
+    for flyer_id, store_display, merchant_name, flyer_name in target_flyers:
         try:
             r = requests.get(
                 f"{FLIPP_BASE}/flyers/{flyer_id}/flyer_items",
@@ -208,7 +228,8 @@ def check_flipp_sales(items: list[str]) -> dict[str, list[tuple]]:
                         valid_to_str = dt.strftime("%b") + " " + str(dt.day)
                     except (ValueError, AttributeError):
                         valid_to_str = raw_date[:10]
-                sale_catalog.append((name.lower(), store_display, price_str, image_url, valid_to_str, flyer_url))
+                item_url = _flipp_item_url(fi["id"], merchant_name, flyer_name)
+                sale_catalog.append((name.lower(), store_display, price_str, image_url, valid_to_str, item_url))
         except Exception:
             continue
 
