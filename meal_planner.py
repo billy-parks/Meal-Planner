@@ -158,9 +158,9 @@ def check_flipp_sales(items: list[str]) -> dict[str, list[tuple[str, str]]]:
     flyers = data.get("flyers") or []
     target_flyers: list[tuple[int, str]] = []
     for flyer in flyers:
-        merchant = (flyer.get("merchant_name") or "").lower()
+        merchant = (flyer.get("merchant") or "").lower()
         display = next((d for kw, d in FLIPP_STORE_MAP.items() if kw in merchant), None)
-        if display:
+        if display and "Groceries" in flyer.get("categories", []):
             target_flyers.append((flyer["id"], display))
 
     if not target_flyers:
