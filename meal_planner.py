@@ -31,12 +31,47 @@ FAMILY_PROFILE = """
 - 3 people: 2 adults and one 8-year-old picky eater
 - The child dislikes: strong spices, mixed textures, visible onions/mushrooms,
   most seafood, and pizza
-- The child likes: pasta, hot dogs, tacos, chicken tenders, mild flavours, 
+- The child likes: pasta, hot dogs, tacos, chicken tenders, mild flavours,
   anything with cheese, grilled cheese, simple sides like corn, brocolli or plain rice
 - Adults enjoy a wider variety but prefer simple weeknight meals, including BBQ recipes
 - Budget-conscious: no expensive specialty ingredients
 - Mix of quick meals (under 30 min) and one or two weekend-style meals
 """
+
+# Cuisine/style pools used to force variety week-to-week
+_CUISINE_POOL = [
+    "Mexican", "Italian", "Asian stir-fry", "Greek/Mediterranean",
+    "American BBQ", "Tex-Mex", "Japanese", "Indian (mild)",
+    "Middle Eastern", "French bistro", "Thai (mild)", "Chinese",
+    "Spanish", "Hawaiian", "Cajun/Southern",
+]
+
+_PROTEIN_POOL = [
+    "chicken breast", "ground beef", "pork chops", "salmon",
+    "ground turkey", "beef strips/steak", "sausage", "shrimp",
+    "tofu", "eggs", "chicken thighs", "pulled pork", "lamb",
+]
+
+_METHOD_POOL = [
+    "grilled", "baked", "slow-cooker", "one-pan stovetop",
+    "sheet-pan oven", "air-fryer", "stir-fried", "pressure cooker",
+]
+
+
+def _pick_variety() -> str:
+    """Return a short variety directive with randomly-sampled cuisines, proteins, and methods."""
+    cuisines = random.sample(_CUISINE_POOL, 4)
+    proteins = random.sample(_PROTEIN_POOL, 5)
+    methods  = random.sample(_METHOD_POOL, 3)
+    return (
+        f"This week's variety targets (you MUST include all of these):\n"
+        f"- Cuisine styles to feature: {', '.join(cuisines)}\n"
+        f"- Proteins to use across the week (each night a DIFFERENT one): {', '.join(proteins)}\n"
+        f"- Cooking methods to use at least once: {', '.join(methods)}\n"
+        f"- Do NOT repeat the same cuisine style or protein two nights in a row.\n"
+        f"- Aim for meals that feel genuinely different from each other, not variations "
+        f"on the same theme (e.g., not pasta three times)."
+    )
 
 # ────────────────────────────────────────────────────────────────────────────
 
@@ -46,11 +81,15 @@ def generate_meal_plan() -> str:
     next_monday = datetime.now() + timedelta(days=(7 - datetime.now().weekday()))
     week_label  = next_monday.strftime("%B %d, %Y")
 
+    variety = _pick_variety()
+
     prompt = f"""
-You are a friendly family meal planner. Generate a 7-day dinner meal plan 
+You are a friendly family meal planner. Generate a 7-day dinner meal plan
 for the week of {week_label} for the following family:
 
 {FAMILY_PROFILE}
+
+{variety}
 
 Format your response EXACTLY like this (use plain text, no markdown):
 
