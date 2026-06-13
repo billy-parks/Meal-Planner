@@ -38,39 +38,47 @@ FAMILY_PROFILE = """
 - Mix of quick meals (under 30 min) and one or two weekend-style meals
 """
 
-# Cuisine/style pools used to force variety week-to-week
-_CUISINE_POOL = [
-    "Mexican", "Italian", "Asian stir-fry", "Greek/Mediterranean",
-    "American BBQ", "Tex-Mex", "Japanese", "Indian (mild)",
-    "Middle Eastern", "French bistro", "Thai (mild)", "Chinese",
-    "Spanish", "Hawaiian", "Cajun/Southern",
+# Variety pools — North American focused, kid-friendly friendly
+_MEAL_STYLE_POOL = [
+    "Mexican (tacos, quesadillas, burritos)",
+    "Italian-American (pasta, meatballs, baked ziti)",
+    "American BBQ (burgers, ribs, grilled chicken)",
+    "Tex-Mex (fajitas, nachos, enchiladas)",
+    "Classic Canadian/American comfort food (casseroles, pot pie, shepherd's pie)",
+    "Hawaiian (teriyaki, pineapple chicken)",
+    "Cajun/Southern (jambalaya, mac & cheese, fried chicken)",
+    "American diner-style (meatloaf, sloppy joes, club sandwiches)",
+    "Backyard cookout (hot dogs, corn on the cob, potato salad)",
+    "Family pasta night (mac & cheese, spaghetti bolognese, lasagna)",
+    "Taco Tuesday variations (taco bowls, walking tacos, nacho night)",
+    "North American stir-fry (simple soy-ginger, no heat)",
 ]
 
 _PROTEIN_POOL = [
-    "chicken breast", "ground beef", "pork chops", "salmon",
-    "ground turkey", "beef strips/steak", "sausage", "shrimp",
-    "tofu", "eggs", "chicken thighs", "pulled pork", "lamb",
+    "chicken breast", "ground beef", "pork chops",
+    "ground turkey", "beef strips", "sausage/hot dogs",
+    "chicken thighs", "pulled pork", "bacon",
 ]
 
 _METHOD_POOL = [
     "grilled", "baked", "slow-cooker", "one-pan stovetop",
-    "sheet-pan oven", "air-fryer", "stir-fried", "pressure cooker",
+    "sheet-pan oven", "air-fryer", "pressure cooker",
 ]
 
 
 def _pick_variety() -> str:
-    """Return a short variety directive with randomly-sampled cuisines, proteins, and methods."""
-    cuisines = random.sample(_CUISINE_POOL, 4)
+    """Return a short variety directive with randomly-sampled styles, proteins, and methods."""
+    styles   = random.sample(_MEAL_STYLE_POOL, 4)
     proteins = random.sample(_PROTEIN_POOL, 5)
     methods  = random.sample(_METHOD_POOL, 3)
     return (
-        f"This week's variety targets (you MUST include all of these):\n"
-        f"- Cuisine styles to feature: {', '.join(cuisines)}\n"
-        f"- Proteins to use across the week (each night a DIFFERENT one): {', '.join(proteins)}\n"
+        f"This week's variety targets — all meals MUST still be kid-friendly for a picky 8-year-old:\n"
+        f"- Meal styles to draw from (pick a different one each night): {', '.join(styles)}\n"
+        f"- Proteins to rotate through the week (each night a DIFFERENT one): {', '.join(proteins)}\n"
         f"- Cooking methods to use at least once: {', '.join(methods)}\n"
-        f"- Do NOT repeat the same cuisine style or protein two nights in a row.\n"
-        f"- Aim for meals that feel genuinely different from each other, not variations "
-        f"on the same theme (e.g., not pasta three times)."
+        f"- Do NOT repeat the same style or protein two nights in a row.\n"
+        f"- Keep flavours mild and familiar — no exotic spices, no heat, nothing a picky child "
+        f"would immediately reject. Variety comes from the TYPE of meal, not from bold flavours."
     )
 
 # ────────────────────────────────────────────────────────────────────────────
