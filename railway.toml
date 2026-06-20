@@ -7,3 +7,9 @@ cronSchedule = "0 9 * * 6"
 # Runs every Saturday at 9:00 AM UTC
 # Change the timezone offset if needed — e.g. for US Eastern (UTC-4 in summer),
 # set to "0 13 * * 6" to get 9 AM Eastern time
+
+# --- Reply checker ---
+# Create a SECOND Railway service in the same project pointing to this repo.
+# Set its start command to: python meal_planner.py --check-replies
+# Set its cron schedule to:  0 */2 * * *   (every 2 hours)
+# Give it the same env vars PLUS GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN

@@ -4,6 +4,8 @@ import os
 import re
 import random
 import requests
+import argparse
+import base64
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta
@@ -482,10 +484,11 @@ def format_html_email(meal_plan_text: str, sales: dict | None = None) -> str:
 
 import resend
 
-def send_email(html_content: str, plain_text: str):
+def send_email(html_content: str, plain_text: str, subject: str = None):
     resend.api_key = os.environ["RESEND_API_KEY"]
-    next_monday = datetime.now() + timedelta(days=(7 - datetime.now().weekday()))
-    subject = f"🍽️ Meal Plan for the Week of {next_monday.strftime('%B %d')}"
+    if subject is None:
+        next_monday = datetime.now() + timedelta(days=(7 - datetime.now().weekday()))
+        subject = f"🍽️ Meal Plan for the Week of {next_monday.strftime('%B %d')}"
 
     resend.Emails.send({
         "from": "Meal Planner <meals@parksmealplans.shop>",
@@ -494,9 +497,203 @@ def send_email(html_content: str, plain_text: str):
         "subject": subject,
         "html": html_content,
     })
-    print(f"✅ Meal plan sent!")
+    print(f"✅ Email sent: {subject}")
+
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+
+_GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
+
+
+def _get_gmail_service():
+    creds = Credentials(
+        token=None,
+        refresh_token=os.environ["GOOGLE_REFRESH_TOKEN"],
+        client_id=os.environ["GOOGLE_CLIENT_ID"],
+        client_secret=os.environ["GOOGLE_CLIENT_SECRET"],
+        token_uri="https://oauth2.googleapis.com/token",
+        scopes=_GMAIL_SCOPES,
+    )
+    return build("gmail", "v1", credentials=creds)
+
+
+def _extract_email_body(message: dict) -> str:
+    def _get_text(part):
+        if part.get("mimeType") == "text/plain":
+            data = part.get("body", {}).get("data", "")
+            if data:
+                return base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
+        for sub in part.get("parts", []):
+            result = _get_text(sub)
+            if result:
+                return result
+        return ""
+    return _get_text(message.get("payload", {}))
+
+
+def _strip_quoted_text(body: str) -> str:
+    """Return only the new reply text, stripping quoted original content."""
+    lines = body.split("\n")
+    result = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith(">"):
+            break
+        if re.match(r"^On .+wrote:$", stripped):
+            break
+        if "-----Original Message-----" in stripped:
+            break
+        result.append(line)
+    return "\n".join(result).strip()
+
+
+def _fetch_unread_replies(service) -> list[tuple[str, str]]:
+    """Return (message_id, feedback_text) for unread inbox replies to meal plan emails."""
+    result = service.users().messages().list(
+        userId="me",
+        q='subject:"Meal Plan" is:unread label:inbox',
+        maxResults=10,
+    ).execute()
+
+    replies = []
+    for msg_ref in result.get("messages", []):
+        msg = service.users().messages().get(
+            userId="me", id=msg_ref["id"], format="full"
+        ).execute()
+        body = _extract_email_body(msg)
+        feedback = _strip_quoted_text(body)
+        if feedback:
+            replies.append((msg_ref["id"], feedback))
+    return replies
+
+
+def _mark_reply_processed(service, message_id: str):
+    service.users().messages().modify(
+        userId="me",
+        id=message_id,
+        body={"removeLabelIds": ["UNREAD"]},
+    ).execute()
+
+
+def generate_updated_plan(feedback: str) -> str:
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    next_monday = datetime.now() + timedelta(days=(7 - datetime.now().weekday()))
+    week_label = next_monday.strftime("%B %d, %Y")
+    variety = _pick_variety()
+
+    prompt = f"""
+You are a friendly family meal planner. The family received a weekly dinner plan and
+replied with the following change requests:
+
+CHANGE REQUESTS FROM FAMILY:
+{feedback}
+
+Generate a REVISED 7-day dinner meal plan for the week of {week_label} that addresses
+these requests. Family profile:
+
+{FAMILY_PROFILE}
+
+{variety}
+
+Format your response EXACTLY like this (use plain text, no markdown):
+
+WEEK OF {week_label}
+===================
+
+MONDAY: [Meal Name]
+TUESDAY: [Meal Name]
+WEDNESDAY: [Meal Name]
+THURSDAY: [Meal Name]
+FRIDAY: [Meal Name]
+SATURDAY: [Meal Name]
+SUNDAY: [Meal Name]
+
+---RECIPES---
+
+[For each day, provide:]
+[DAY]: [Meal Name]
+Prep time: X min | Cook time: X min | Kid-friendly: Yes/Mostly/With modification
+Ingredients (serves 3):
+- item
+- item
+Instructions:
+1. Step
+2. Step
+Kid tip: [one sentence on how to make it work for a picky eater]
+
+---SHOPPING LIST---
+
+Produce:
+- item
+
+Meat & Seafood:
+- item
+
+Dairy & Eggs:
+- item
+
+Pantry & Dry Goods:
+- item
+
+Frozen:
+- item
+
+Other:
+- item
+
+---MEAL PREP TIPS---
+[2-3 sentences of weekend prep tips to make the week easier]
+"""
+
+    message = client.messages.create(
+        model="claude-opus-4-5",
+        max_tokens=4000,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return message.content[0].text
+
+
+def process_replies():
+    print("📬 Checking for meal plan replies...")
+    service = _get_gmail_service()
+    replies = _fetch_unread_replies(service)
+
+    if not replies:
+        print("   No new replies found.")
+        return
+
+    print(f"   Found {len(replies)} unread reply(ies).")
+    for message_id, feedback in replies:
+        print(f"   Feedback: {feedback[:120]}...")
+        updated_plan = generate_updated_plan(feedback)
+
+        shopping_items = _extract_shopping_items(updated_plan)
+        sales: dict = {}
+        try:
+            sales = check_flipp_sales(shopping_items)
+            if sales:
+                updated_plan = annotate_shopping_list(updated_plan, sales)
+        except Exception as exc:
+            print(f"   Sale check skipped: {exc}")
+
+        next_monday = datetime.now() + timedelta(days=(7 - datetime.now().weekday()))
+        subject = f"🍽️ Updated Meal Plan for the Week of {next_monday.strftime('%B %d')}"
+        html = format_html_email(updated_plan, sales=sales or None)
+        send_email(html, updated_plan, subject=subject)
+        _mark_reply_processed(service, message_id)
+        print("   ✅ Updated plan sent and reply marked as read.")
+
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--check-replies", action="store_true",
+                        help="Check Gmail for replies and send updated plans")
+    args = parser.parse_args()
+
+    if args.check_replies:
+        process_replies()
+        return
+
     print("🥗 Generating meal plan...")
     meal_plan = generate_meal_plan()
 
