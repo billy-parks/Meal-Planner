@@ -490,6 +490,7 @@ def send_email(html_content: str, plain_text: str):
     resend.Emails.send({
         "from": "Meal Planner <meals@parksmealplans.shop>",
         "to": [e.strip() for e in os.environ["RECIPIENT_EMAILS"].split(",")],
+        "reply_to": os.environ["GMAIL_ADDRESS"],
         "subject": subject,
         "html": html_content,
     })
